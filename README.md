@@ -32,7 +32,7 @@ fn func_name@0x01234ABCD(Type argName@register, ...) -> ReturnType@register or v
   # Stack storage is denoted as 'variable@sp0x34', which means that the variable is
   # stored at r1+0x34, where r1 is the stack pointer.
   #
-  # The code is sometimes sprinkled with commends that start with #abcd0123,
+  # The code is sometimes sprinkled with comments that start with #abcd0123,
   # that means that the following code starts at that address in the assembly code.
   # This is useful for setting breakpoints, or for double checking that the pseudocode
   # is really correct.
