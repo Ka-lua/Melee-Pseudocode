@@ -7,12 +7,17 @@ To access imported data or indirect global data, the build-time offset of the gl
 To access imported routines, the offset of the routine is added to the value in GPR2, as in the data version, but the result points not directly to the routine, but to a transition vector.
 
 Table of Contents pointer TOC = rtoc = r2 = 0x804df9e0 (for Melee, vanilla and slippi, never changes)
-0x804DBcD4 = R2-0x3D0C: 0.5f (float) appears to be constant (and algorithms are only logical with this value)
-0x804D8254 = R2-0x778C: 0.0f (float) appears to be constant (and algorithms are only logical with this value)
-0x804D8330 = R2-0x76B0: 0.0f (float) appears to be constant (and algorithms are only logical with this value)
-0x804d8334 = R2-0x76AC: 1.0f (float) appears to be constant (and algorithms are only logical with this value)
+0x804DBcD4 = R2-0x3D0C: 0.5f (float)
+0x804D8254 = R2-0x778C: 0.0f (float)
+0x804D8330 = R2-0x76B0: 0.0f (float)
+0x804d8334 = R2-0x76AC: 1.0f (float)
              R2-0x6B64: 1.0f (float) not tested if constant
-             R2-0x6890: 0.0f (float) appears to be constant (and algorithms are only logical with this value)
+             R2-0x6890: 0.0f (float)
+             R2-0x7C30:  0.0f (float)
+             R2-0x7C2C: -pi/2 (float), hex=0xbfc90fdb
+             r2-0x7C28:    pi (float), hex=0x40490fdb
+             r2-0x7C24:  0.0f (float)
+             R2-0x7C20:  pi/2 (float), hex=0x3fc90fdb
 
 # Static Variables
 R13-0x514C: ftCommonData* p_stc_ftcommon
@@ -31,12 +36,158 @@ struct CharData:
 ################################################################################################
 
 fn atan2@0x80022c30(y@f1, x@f2) -> angle@f1
-@Returns: angle in (-pi,pi] between the positive x-axis and the ray through (x,y),
-          or to be more exact: there is a r > 0 such that (x,y) = r * (cos(angle), sin(angle)).
-          I guess the angle can also be -pi for points like (-10000, -eps) for small epsilon.
+@Notes:
+	Mathematical definition:
+	atan2(y,x) is the oriented angle in the range (-pi, pi]
+	from the vector (1,0) to (x,y), or equivalently a=atan(y,x) is uniquely defined by the property
+	(x,y)=(cos(a), sin(a)).
+	
+	Actual behaviour:
+	Using the single precision (->bad approximation!) constants
+	pi/2: hex = 0x3fc90fdb, or 0x3ff921fb60000000 when represented as a double,
+	pi  : hex = 0x40490fdb, or 0x400921fb60000000 when represented as a double,
+	the result is always in the range [-pi, pi]. The result is:
+	x >  0: atan(y/x)
+	x <  0, y >  0: atan(y/x) + pi
+	x <  0, y <  0: atan(y/x) - pi
+	x <  0, y == +0: +pi
+	x <  0, y == -0: -pi
+	x == 0, y > 0:  pi/2
+	x == 0, y < 0: -pi/2
+	x == 0, y == 0, signbit(x)!=signbit(y): pi/2
+	x == 0, y == 0, signbit(x)==signbit(y): signbit set ? -pi/2 : pi/2
+	All divisions, additions and subtractions above are done with single precision.
+	Note how the result depends on the sign bit of y if x < 0 and y == 0.
+@Reimplementation:
+	bool sign_x = signbit(x)
+	bool sign_y = signbit(y)
+	if sign_x == sign_y:
+		if sign_x != 0: # x, y <= 0
+			return (x == 0) ? -pi/2 : atan(y/x)-pi
+		else:
+			return (x != 0) ? atan(y/x) : pi/2
+	else:
+		if x <  0: return atan(y/x) + pi
+		if x != 0: return atan(y/x)
+		return pi/2
+@PseudoAssembly:
+	# save lr, r1 on the stack
+	float y@sp0x8 = y@f1
+	float x@sp0xC = x@f2
+	int raw_y@r0 = raw_cast(int) y@sp0x08
+	int raw_x@r3 = raw_cast(int) x@sp0x0C
+	bool sign_y@r4 = raw_y@r0.signbit # highest significant bit
+	bool sign_x@r0 = raw_y@r3.signbit # highest significant bit
+	#80022c54
+	if sign_x@r0 == sign_y@r4:
+		#80022c5c
+		if sign_x@r0 != 0:
+			x@f1 = x@sp0xC
+			#80022c6c
+			if x@f1 == 0: # 0 == *(float*)(r2-0x7C30)
+				return -pi/2 # the hex value for -pi/2 is 0xbfc90fdb, stored at r2-0x7C2C
+			y@f0 = y@sp0x8
+			return atan@0x80022E68(f1 = y@f0 / x@f1) - pi # the hex value for pi is 0x40490fdb, stored at r2-0x7C28
+		x@f1 = x@sp0xC
+		#80022c98:
+		if x@f1 != 0 # 0 == *(float*)(r2-0x7C24)
+			y@f0 = y@sp0x8
+			return atan@0x80022E68(f1 = y@f0 / x@f1)
+		return pi/2 # the hex value for pi/2 is 0x3fc90fdb, stored at r2-0x7C20
+	else: #80022cbc
+		x@f1 = x@sp0xC
+		#80022cc0
+		if x@f1 < 0: # 0 == *(float*)(r2-0x7C24)
+			return atan(f1 = y@sp0x8 / x@f1) + pi # the hex value for pi is 0x40490fdb, stored at r2-0x7C28
+		if x@f1 != 0: # 0 == *(float*)(r2-0x7C24)
+			return atan(f1 = y@sp0x8 / x@f1)
+		return pi_half with sign of sign_y@r4 # hex value of pi_half: (16329 << 16) + 4049 = 0x3fc90fdb
+	#80022d0c: restore stack and return
+@Assembly:
+	80022c30: mflr	r0
+	80022c34: stw	r0, 0x0004 (sp)
+	80022c38: stwu	sp, -0x0010 (sp)
+	80022c3c: stfs	f1, 0x0008 (sp)
+	80022c40: stfs	f2, 0x000C (sp)
+	80022c44: lwz	r0, 0x0008 (sp)
+	80022c48: lwz	r3, 0x000C (sp)
+	80022c4c: rlwinm	r4, r0, 0, 0, 0 (80000000)
+	80022c50: rlwinm	r0, r3, 0, 0, 0 (80000000)
+	80022c54: cmpw	r0, r4
+	80022c58: bne-	 ->0x80022CBC
+	80022c5c: cmpwi	r0, 0
+	80022c60: beq-	 ->0x80022C94
+	80022c64: lfs	f0, -0x7C30 (rtoc)
+	80022c68: lfs	f1, 0x000C (sp)
+	80022c6c: fcmpu	cr0,f0,f1
+	80022c70: bne-	 ->0x80022C7C
+	80022c74: lfs	f1, -0x7C2C (rtoc)
+	80022c78: b	->0x80022D0C
+	80022c7c: lfs	f0, 0x0008 (sp)
+	80022c80: fdivs	f1,f0,f1
+	80022c84: bl	->0x80022E68
+	80022c88: lfs	f0, -0x7C28 (rtoc)
+	80022c8c: fsubs	f1,f1,f0
+	80022c90: b	->0x80022D0C
+	80022c94: lfs	f1, 0x000C (sp)
+	80022c98: lfs	f0, -0x7C24 (rtoc)
+	80022c9c: fcmpu	cr0,f1,f0
+	80022ca0: beq-	 ->0x80022CB4
+	80022ca4: lfs	f0, 0x0008 (sp)
+	80022ca8: fdivs	f1,f0,f1
+	80022cac: bl	->0x80022E68
+	80022cb0: b	->0x80022D0C
+	80022cb4: lfs	f1, -0x7C20 (rtoc)
+	80022cb8: b	->0x80022D0C
+	80022cbc: lfs	f1, 0x000C (sp)
+	80022cc0: lfs	f0, -0x7C24 (rtoc)
+	80022cc4: fcmpo	cr0,f1,f0
+	80022cc8: bge-	 ->0x80022CE4
+	80022ccc: lfs	f0, 0x0008 (sp)
+	80022cd0: fdivs	f1,f0,f1
+	80022cd4: bl	->0x80022E68
+	80022cd8: lfs	f0, -0x7C28 (rtoc)
+	80022cdc: fadds	f1,f0,f1
+	80022ce0: b	->0x80022D0C
+	80022ce4: fcmpu	cr0,f1,f0
+	80022ce8: beq-	 ->0x80022CFC
+	80022cec: lfs	f0, 0x0008 (sp)
+	80022cf0: fdivs	f1,f0,f1
+	80022cf4: bl	->0x80022E68
+	80022cf8: b	->0x80022D0C
+	80022cfc: addis	r3, r4, 16329
+	80022d00: addi	r0, r3, 4059
+	80022d04: stw	r0, 0x0008 (sp)
+	80022d08: lfs	f1, 0x0008 (sp)
+	80022d0c: lwz	r0, 0x0014 (sp)
+	80022d10: addi	sp, sp, 16
+	80022d14: mtlr	r0
+	80022d18: blr
 
-fn PSVECAdd@0x80342D54     (r3: Vec3* pA, r4: Vec3* pB, r5: Vec3* pResult): *pResult = *pA + *pB
-fn PSVECSubtract@0x80342d78(r3: Vec3* pA, r4: Vec3* pB, r5: Vec3* pResult): *pResult = *pA - *pB
+fn sin@0x803263d4(float angle@f1) -> result@f1
+@Bug:
+	For the angle 3.14159=atan2(0,-1), the result is
+	sin( 3.14159) = -8.74228e-08 (0xbe7777a5c0000000). This wrong, the result should be positive because   0 < 3.14159  < Pi.
+	sin(-3.14159) = +8.74228e-08 (0x3e7777a5c0000000). Also wrong, the result should be negative because -Pi < -3.14159 < 0.
+	However for a slightly more accurate value of pi, the result is very accurate again.
+	sin(3.141592, hex=0x400921f9f01b866e) = 2.7736e-06
+	TODO: This makes me suspicious that a special case is used for the angle 3.13159=atan2(0,-1).
+
+fn cos@0x80326240(float angle@f1) -> result@f1
+@ExampleValues:
+	cos(+-3.14159) = -1.0, where 3.14159=atan2(0,-1). The exact result is closer to -0.9999999999964793, but this is correctly
+	rounded for single precision.
+
+How these numerical errors affect vector normalization:
+Sometimes vectors are normalized in a silly way:
+When normalizing a 2D-vector v, a=atan2(v.y, v.x) is computed, then vec2(cos(a), sin(a)) is used as
+the normalized vector, instead of just computing v/v.length().
+When normalizing (-1,0) that way, we get a=atan2(0,-1)=3.14159, and then the result is vec2(-1, -8.74228e-08).
+Similarly when normalizing (-1,-0), the result is vec2(-1, 8.74228e-08). TODO: research how exactly that is related
+to the (extended) invisible ceiling glitch.
+
+fn PSVECAdd@0x80342D54     (Vec3* pA@r3, Vec3* pB@r4, Vec3* pResult@r5): *pResult = *pA + *pB
+fn PSVECSubtract@0x80342d78(Vec3* pA@r3, Vec3* pB@r4, Vec3* pResult@r5): *pResult = *pA - *pB
 
 ################################################################################################
 # Animation state change functions?
@@ -63,9 +214,9 @@ fn AS_Walk_Prefunction@0x800c9528(float argFloat@f1, PlayerEntityStruct* pPlayer
 	float Multiplier@f8 = 1.0 # assuming TOC.float@-0x6B64 = 1.0 is const
 
 	if pCharData@r31.MetalTextureByte@0x2223 & 0b01:
-		// for peach this would be: r3 = 0x80c6d170 -> f8 = 0.7 (surrounded by many other float values)
-		// on another dolphin instance r3 had another value, but still points to the same value 0.7
-		// surrounded by those other values
+		# for peach this would be: r3 = 0x80c6d170 -> f8 = 0.7 (surrounded by many other float values)
+		# on another dolphin instance r3 had another value, but still points to the same value 0.7
+		# surrounded by those other values
 		void* pData = r13-0x5184 # TODO: is this a struct, or just a pointer to a float? Is that float constant?
 		Multiplier@f8 = *cast(float*)(pData+0) # always=0.7?
 
@@ -222,7 +373,7 @@ fn AS_Walk(PlayerEntityStruct* pPlayerEntityStruct@r3,
 	
 	pCharData@r31 = pPlayerEntityStruct@r3.pCharData@0x2C
 	pCharData@r31.float@0x2360 = Multiplier@f8
-	pCharData@r3 = pPlayerEntityStruct@r3.pCharData@0x2C // unnecessary memory read, could just do r3=r31
+	pCharData@r3 = pPlayerEntityStruct@r3.pCharData@0x2C # unnecessary memory read, could just do r3=r31
 	float absGroundVel@f2 = pCharData@r3.groundVel@0xEC
 	if absGroundVel@f2 < 0: # 0.0f@(r2-0x6890)
 		absGroundVel@f2 = -absGroundVel@f2
@@ -245,7 +396,7 @@ fn AS_Walk(PlayerEntityStruct* pPlayerEntityStruct@r3,
 	pCharData@r31.float?@0x2354 = SlowWalkSpeed@f29
 	pCharData@r31.float?@0x2358 = WalkSpeed@f30
 	pCharData@r31.float?@0x235C = FastWalkSpeed@f31
-	// unwind stackframe and return
+	# unwind stackframe and return
 @Assembly:
 	#800dfca4: mflr	r0
 	r0 = lr
@@ -567,7 +718,7 @@ fn PlayerThink_Physics@0x8006b82c(PlayerEntityStruct* pPlayerEntityStruct@r3)->v
 		#8006B8B0 Update knockback, and (when transitioning to the ground?) also the velocity:
 		# when airborne:
 		# - reduce knockback magnitude by knockbackDecay
-		# - unless some (debugging?) flag is set, then reduces knockback velocity x and y individually by pCharData.float@0x2D4.
+		# - unless some (debugging?) flag is set, then reduces knockback velocity x and y individually by the x and y components of pCharData.vec2@0x2D4.
 		# - always set ground_kb_vel = 0
 		# when grounded:
 		# - when ground_kb_vel==0, set it to knockbackVel.x (this might have some unintended implications)
@@ -617,18 +768,17 @@ fn PlayerThink_Physics@0x8006b82c(PlayerEntityStruct* pPlayerEntityStruct@r3)->v
 						# 	*p_kb_vel *= (kb_vel_len - kb_vel_decrement)/kb_vel_len
 						# But this is implemented very inefficiently like this:
 						float kb_angle = atan2@0x80022C30(kb_vel_y, kb_vel_x)
-						vec2 normalized_kb_vel = vec2(cos(kb_angle), sin(kb_angle)) # kb_vel / kb_vel_len would be better still
+						vec2 normalized_kb_vel = vec2(cos@8006b9b8(kb_angle), sin@8006b9d4(kb_angle)) # kb_vel / kb_vel_len would be better still
 						*p_kb_vel@r30 -= kb_vel_decrement * normalized_kb_vel
 				pCharData@r31.ground_kb_vel@0xF0 = 0 # = 0.0f@toc-0x778C
 			else: #8006b9f8
 				# This is probably triggered when transitioning from the air to the ground, for example with ASDI down after getting hit.
-				# Not triggered when the character receives knockback but already has previous knockback, while always being grounded! This should nullify the new knockback.
 				if pCharData@r31.ground_kb_vel@0xF0 == 0:
 					pCharData@r31.ground_kb_vel@0xF0 = kb_vel_x@f2
 				float effectiveFriction = pCharData@r31.friction@0x128 * Stage_GetGroundFrictionMultiplier@0x80084A40(r3 = pCharData@r31) * p_stc_ftcommon@(r13-0x514c).float?@0x200 # ground multiplier usually 1. last factor was 1 when I looked
 				reduceGroundKnockbackVel@0x8007CCA0(r3 = pCharData@r31, f1 = effectiveFriction)
-				Vec2* pNormal@r29 = &pCharData@r31.surfaceNormal@0x844 # surface normal points out of the surface.
 				# set knockback velocity to ground_kb_vel * surfaceTangent
+				Vec2* pNormal@r29 = &pCharData@r31.surfaceNormal@0x844 # surface normal points out of the surface.
 				*(p_kb_vel@r30) = pCharData@r31.ground_kb_vel@0xF0 * Vec2(pNormal@r29.y@0x4, -pNormal@r29.x@0x0)
 		
  		#8006BA5C Now handle the attacker's shield knockback in a similar way
@@ -644,13 +794,9 @@ fn PlayerThink_Physics@0x8006b82c(PlayerEntityStruct* pPlayerEntityStruct@r3)->v
 				float len_decrement = p_stc_ftcommon@(r13-0x514c).shield_kb_frameDecay@0x3E8 # TODO: document this
 				if atkShieldKB_len@f4 < len_decrement:
 					pAtkShieldKB@r29.x@0x0 = 0
-					# TODO: BUG IN THE MELEE CODE? WASN'T ABLE TO ENTER THIS CODE SECTION YET.
-					# It looks like the next line should be pAtkShieldKB@r29.y@0x04 = 0, but it is:
+					# BUG IN THE MELEE CODE THAT CAUSES THE INVISIBLE CEILING GLITCH
+					# The next line should be 'pAtkShieldKB.y = 0', but instead it is:
 					p_kb_vel@r30.y@0x4 = 0
-					# I double checked this, and r30 is only initialized once to p_kb_vel and then never
-					# changed anywhere up to this point. This is probably a programming error.
-					# Probably caused by a typo. This only reinforces that atkShieldKB could be
-					# some type knockback velocity.
 				else:
 					# again, the better implementation would be:
 					#	*pAtkShieldKB *= (atkShieldKB_len - len_decrement)/atkShieldKB_len
@@ -835,7 +981,7 @@ fn PlayerThink_Physics@0x8006b82c(PlayerEntityStruct* pPlayerEntityStruct@r3)->v
 	f2 = pCharData@r31.position@0xB0.y
 	OSReport@0x803456A8(r3 = 0x803C0000 + 1452, CR.bits[6] = 1) # bit[0] = leftmost bit
 	__assert@0x80388220(r3 = 0x803C0000 + 1404, r4 = 2517, r5 = r13 - 31888)
-	// unwind stackframe and return
+	# unwind stackframe and return
 @Assembly:
 	8006b82c: mflr	r0
 	8006b830: stw	r0, 0x0004 (sp)
@@ -1940,7 +2086,7 @@ fn reduceGroundShieldKnockbackVel@0x8007ce4c(CharData* pCharData@r3, float delta
 	8007ce8c: stfs	f2, 0x00F4 (r3)
 	8007ce90: blr
 
-fn Collision_GetPositionDifference@800567c0(r3: uint groundID, r4: Vec3* fighterPos, r5: Vec3* UnkReturnVector) -> r3=1 ?
+fn Collision_GetPositionDifference@0x800567c0(uint groundID@r3, Vec3* fighterPos@r4, Vec3* UnkReturnVector@r5) -> r3=1 ?
 @Notes:
 	sets r3=1 just before returning, without using r1 again. Is that a constant return value = 1?
 @Assembly:
@@ -2099,7 +2245,7 @@ fn DataOffset_ComboCount_TopNAttackerModify@0x80076528(PlayerEntityStruct* pPlay
 	uint16 comboCounter@r3 = pCharData@r5.comboCounter(int16)@0x2090
 	float f@f2 = (comboCounter@r3 < p_stc_ftcommon@(r13-0x514c).int?@0x4C8) ?
 		p_stc_ftcommon@r6.float?@0x4D0 : p_stc_ftcommon@r6.float?@0x4D4
-	pCharData@r5.position@0xB0.xy += pCharData@r5.facingDirection@0x2C * f2 * vec2(-pGroundSlope@r4.y@0x4, pGroundSlope@r4.x@0x0)
+	pCharData@r5.position@0xB0.xy += pCharData@r5.facingDirection@0x2C * f@f2 * vec2(-pGroundSlope@r4.y@0x4, pGroundSlope@r4.x@0x0)
 @Assembly:
 	80076528: lwz	r5, 0x002C (r3)
 	8007652c: lhz	r3, 0x2092 (r5)
@@ -2237,5 +2383,4 @@ fn __assert@80388220(int arg1@r3, int arg2@r4, int arg3@r5) -> void
 	8038826c: addi	sp, sp, 32
 	80388270: mtlr	r0
 	80388274: blr
-
 
